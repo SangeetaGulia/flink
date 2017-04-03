@@ -39,12 +39,17 @@
 		<!-- https://mvnrepository.com/artifact/org.apache.carbondata/carbondata-hadoop -->
 		<dependency>
 			<groupId>org.apache.carbondata</groupId>
-			<artifactId>carbondata-hadoop</artifactId>
+			<artifactId>carbondata-spark</artifactId>
 			<version>1.0.0-incubating</version>
 		</dependency>
+    <dependency>
+      <groupId>org.apache.flink</groupId>
+      <artifactId>flink-core</artifactId>
+      <version>1.3-SNAPSHOT</version>
+    </dependency>
 
 
-	</dependencies>
+  </dependencies>
 
 
 </project>

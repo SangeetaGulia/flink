@@ -1,166 +1,151 @@
 package org.apache.flink;
 
-import org.apache.carbondata.core.metadata.AbsoluteTableIdentifier;
-import org.apache.carbondata.core.metadata.schema.table.CarbonTable;
-import org.apache.carbondata.core.mutate.UpdateVO;
-import org.apache.carbondata.core.scan.expression.Expression;
-import org.apache.carbondata.core.scan.filter.resolver.FilterResolverIntf;
-import org.apache.carbondata.core.scan.model.CarbonQueryPlan;
-import org.apache.carbondata.core.scan.model.QueryModel;
-import org.apache.carbondata.hadoop.CarbonRecordReader;
-import org.apache.carbondata.hadoop.readsupport.CarbonReadSupport;
-import org.apache.carbondata.hadoop.util.CarbonInputFormatUtil;
-import org.apache.carbondata.hadoop.util.ObjectSerializationUtil;
-import org.apache.carbondata.hadoop.util.SchemaReader;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.flink.carbonutils.CarbonMultiBlockSplit;
-import org.apache.flink.carbonutils.DictionaryDecodeReadSupport;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.InvalidPathException;
-import org.apache.hadoop.mapreduce.InputSplit;
-import org.apache.hadoop.mapreduce.RecordReader;
-import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
-import org.apache.hadoop.util.StringUtils;
-
 import java.io.IOException;
-import java.lang.reflect.Constructor;
-import java.util.List;
+import java.util.Iterator;
 
-public class CarbonDataInputFormat<T> extends FileInputFormat<Void, T> {
+import org.apache.flink.api.common.io.DefaultInputSplitAssigner;
+import org.apache.flink.api.common.io.RichInputFormat;
+import org.apache.flink.api.common.io.statistics.BaseStatistics;
+import org.apache.flink.configuration.Configuration;
+import org.apache.flink.core.io.InputSplit;
+import org.apache.flink.core.io.InputSplitAssigner;
+import org.apache.flink.types.Row;
+import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.sql.CarbonContext;
+import org.apache.spark.sql.DataFrame;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-	private static final String CARBON_TABLE = "mapreduce.input.carboninputformat.table";
-	private static final String CARBON_READ_SUPPORT = "mapreduce.input.carboninputformat.readsupport";
-	private static final String COLUMN_PROJECTION = "mapreduce.input.carboninputformat.projection";
-	private static final String FILTER_PREDICATE = "mapreduce.input.carboninputformat.filter.predicate";
-	private static final Log LOG = LogFactory.getLog(CarbonDataInputFormat.class);
+public class CarbonDataInputFormat<T>
+    extends RichInputFormat<Row, InputSplit> {
 
+  private static final Logger LOG = LoggerFactory.getLogger(CarbonDataInputFormat.class);
 
-	@Override public RecordReader<Void, T> createRecordReader(InputSplit inputSplit,
-															  TaskAttemptContext taskAttemptContext) throws IOException, InterruptedException {
-		Configuration configuration = taskAttemptContext.getConfiguration();
-		QueryModel queryModel = getQueryModel(inputSplit, taskAttemptContext);
-		CarbonReadSupport<T> readSupport = getReadSupportClass(configuration);
-		return new CarbonRecordReader<T>(queryModel, readSupport);
-	}
+  private String sparkMaster;
+  private String storeLocation;
+  private String appName = "flink-carbondata-default";
+  private String queryTemplate;
+  private CarbonContext carbonContext;
+  private boolean hasNext;
+  private DataFrame dataFrame;
+  private Iterator<org.apache.spark.sql.Row> data;
 
-	public QueryModel getQueryModel(InputSplit inputSplit, TaskAttemptContext taskAttemptContext)
-		throws IOException {
-		Configuration configuration = taskAttemptContext.getConfiguration();
-		CarbonTable carbonTable = getCarbonTable(configuration);
-		// getting the table absoluteTableIdentifier from the carbonTable
-		// to avoid unnecessary deserialization
-		AbsoluteTableIdentifier identifier = carbonTable.getAbsoluteTableIdentifier();
+  public CarbonDataInputFormat() {
+  }
 
-		// query plan includes projection column
-		String projection = getColumnProjection(configuration);
-		CarbonQueryPlan queryPlan = CarbonInputFormatUtil.createQueryPlan(carbonTable, projection);
-		QueryModel queryModel = QueryModel.createModel(identifier, queryPlan, carbonTable);
+  @Override public void configure(Configuration parameters) {
+    //do nothing here
+  }
 
-		// set the filter to the query model in order to filter blocklet before scan
-		Expression filter = getFilterPredicates(configuration);
-		CarbonInputFormatUtil.processFilterExpression(filter, carbonTable);
-		FilterResolverIntf filterIntf =  CarbonInputFormatUtil.resolveFilter(filter, identifier);
-		queryModel.setFilterExpressionResolverTree(filterIntf);
+  @Override public BaseStatistics getStatistics(BaseStatistics cachedStatistics)
+      throws IOException {
+    return cachedStatistics;
+  }
 
-		// update the file level index store if there are invalid segment
-		if (inputSplit instanceof CarbonMultiBlockSplit) {
-			CarbonMultiBlockSplit split = (CarbonMultiBlockSplit) inputSplit;
-			List<String> invalidSegments = split.getAllSplits().get(0).getInvalidSegments();
-			if (invalidSegments.size() > 0) {
-				queryModel.setInvalidSegmentIds(invalidSegments);
-			}
-			List<UpdateVO> invalidTimestampRangeList =
-				split.getAllSplits().get(0).getInvalidTimestampRange();
-			if ((null != invalidTimestampRangeList) && (invalidTimestampRangeList.size() > 0)) {
-				queryModel.setInvalidBlockForSegmentId(invalidTimestampRangeList);
-			}
-		}
-		return queryModel;
-	}
+  @Override public InputSplit[] createInputSplits(int minNumSplits) throws IOException {
+    return new InputSplit[0];
+  }
 
-	public static CarbonTable getCarbonTable(Configuration configuration) throws IOException {
-		String carbonTableStr = configuration.get(CARBON_TABLE);
-		if (carbonTableStr == null) {
-			populateCarbonTable(configuration);
-			// read it from schema file in the store
-			carbonTableStr = configuration.get(CARBON_TABLE);
-			return (CarbonTable) ObjectSerializationUtil.convertStringToObject(carbonTableStr);
-		}
-		return (CarbonTable) ObjectSerializationUtil.convertStringToObject(carbonTableStr);
-	}
+  @Override public InputSplitAssigner getInputSplitAssigner(InputSplit[] inputSplits) {
+    return new DefaultInputSplitAssigner(inputSplits);
+  }
 
-	public CarbonReadSupport<T> getReadSupportClass(Configuration configuration) {
-		String readSupportClass = configuration.get(CARBON_READ_SUPPORT);
-		//By default it uses dictionary decoder read class
-		CarbonReadSupport<T> readSupport = null;
-		if (readSupportClass != null) {
-			try {
-				Class<?> myClass = Class.forName(readSupportClass);
-				Constructor<?> constructor = myClass.getConstructors()[0];
-				Object object = constructor.newInstance();
-				if (object instanceof CarbonReadSupport) {
-					readSupport = (CarbonReadSupport) object;
-				}
-			} catch (ClassNotFoundException ex) {
-				LOG.error("Class " + readSupportClass + "not found", ex);
-			} catch (Exception ex) {
-				LOG.error("Error while creating " + readSupportClass, ex);
-			}
-		} else {
-			readSupport = new DictionaryDecodeReadSupport<>();
-		}
-		return readSupport;
-	}
+  @Override public void open(InputSplit split) throws IOException {
+    try {
+      dataFrame = carbonContext.sql(queryTemplate);
+      data = dataFrame.collectAsList().iterator();
+      hasNext = data.hasNext();
+    } catch (Exception ex) {
+      throw new IllegalArgumentException("open() failed." + ex.getMessage(), ex);
+    }
+  }
 
-	public static String getColumnProjection(Configuration configuration) {
-		return configuration.get(COLUMN_PROJECTION);
-	}
+  @Override public boolean reachedEnd() throws IOException {
+    return !hasNext;
+  }
 
-	private Expression getFilterPredicates(Configuration configuration) {
-		try {
-			String filterExprString = configuration.get(FILTER_PREDICATE);
-			if (filterExprString == null) {
-				return null;
-			}
-			Object filter = ObjectSerializationUtil.convertStringToObject(filterExprString);
-			return (Expression) filter;
-		} catch (IOException e) {
-			throw new RuntimeException("Error while reading filter expression", e);
-		}
-	}
+  @Override public Row nextRecord(Row row)
+      throws IOException {
+    try {
+      if (!hasNext) {
+        return null;
+      }
+      for (int pos = 0; pos < row.getArity(); pos++) {
+        row.setField(pos, data.next().get(pos));
+      }
+      //update hasNext after we've read the record
+      hasNext = data.next() != null;
+      return row;
 
-	/**
-	 * this method will read the schema from the physical file and populate into CARBON_TABLE
-	 * @param configuration
-	 * @throws IOException
-	 */
-	private static void populateCarbonTable(Configuration configuration) throws IOException {
-		String dirs = configuration.get(INPUT_DIR, "");
-		String[] inputPaths = StringUtils.split(dirs);
-		if (inputPaths.length == 0) {
-			throw new InvalidPathException("No input paths specified in job");
-		}
-		AbsoluteTableIdentifier absoluteTableIdentifier =
-			AbsoluteTableIdentifier.fromTablePath(inputPaths[0]);
-		// read the schema file to get the absoluteTableIdentifier having the correct table id
-		// persisted in the schema
-		CarbonTable carbonTable = SchemaReader.readCarbonTableFromStore(absoluteTableIdentifier);
-		setCarbonTable(configuration, carbonTable);
-	}
+    } catch (NullPointerException npe) {
+      throw new IOException("Couldn't access row", npe);
+    } catch (Exception ex) {
+      throw new IOException(ex.getMessage());
+    }
+  }
 
-	/**
-	 * It is optional, if user does not set then it reads from store
-	 *
-	 * @param configuration
-	 * @param carbonTable
-	 * @throws IOException
-	 */
-	public static void setCarbonTable(Configuration configuration, CarbonTable carbonTable)
-		throws IOException {
-		if (null != carbonTable) {
-			configuration.set(CARBON_TABLE, ObjectSerializationUtil.convertObjectToString(carbonTable));
-		}
-	}
+  @Override public void close() throws IOException {
+
+  }
+
+  @Override public void openInputFormat() {
+    try {
+      SparkConf conf = new SparkConf().setMaster(sparkMaster).setAppName(appName);
+      JavaSparkContext javaSparkContext = new JavaSparkContext(conf);
+      carbonContext = new CarbonContext(javaSparkContext.sc(), storeLocation);
+    } catch (Exception ex) {
+      throw new IllegalArgumentException();
+    }
+  }
+
+  @Override public void closeInputFormat() {
+    try {
+      carbonContext.sparkContext().cancelAllJobs();
+      carbonContext.sparkContext().stop();
+    } catch (Exception ex) {
+      LOG.info("Inputformat couldn't be closed - " + ex.getMessage());
+    } finally {
+      carbonContext = null;
+    }
+  }
+
+  public static CarbonDataInputFormatBuilder buildCarbonDataInputFormat() {
+    return new CarbonDataInputFormatBuilder();
+  }
+
+  public static class CarbonDataInputFormatBuilder {
+    private final CarbonDataInputFormat format;
+
+    public CarbonDataInputFormatBuilder() {
+      this.format = new CarbonDataInputFormat();
+    }
+
+    public CarbonDataInputFormatBuilder setMasterUrl(String sparkMaster) {
+      format.sparkMaster = sparkMaster;
+      return this;
+    }
+
+    public CarbonDataInputFormatBuilder setStoreLocation(String storeLocation) {
+      format.storeLocation = storeLocation;
+      return this;
+    }
+
+    public CarbonDataInputFormatBuilder setAppName(String appName) {
+      format.appName = appName;
+      return this;
+    }
+
+    public CarbonDataInputFormat finish() {
+      if (format.sparkMaster == null) {
+        LOG.info("Spark Master URL was not supplied separately.");
+      }
+      if (format.storeLocation == null) {
+        LOG.info("Store Location was not supplied separately");
+      }
+      return format;
+    }
+
+  }
+
 }
