@@ -10,8 +10,8 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.io.InputSplit;
 import org.apache.flink.core.io.InputSplitAssigner;
 import org.apache.flink.types.Row;
-import org.apache.spark.SparkConf;
-import org.apache.spark.api.java.JavaSparkContext;
+//import org.apache.spark.SparkConf;
+//import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.sql.CarbonContext;
 import org.apache.spark.sql.DataFrame;
 import org.slf4j.Logger;
@@ -35,6 +35,7 @@ public class CarbonDataInputFormat<T> extends RichInputFormat<Row, InputSplit> {
 
 	@Override
 	public void configure(Configuration parameters) {
+		System.out.println("\n\n\n\n\nEntered Configure\n\n\n\n\n");
 		//do nothing here
 	}
 
@@ -56,8 +57,11 @@ public class CarbonDataInputFormat<T> extends RichInputFormat<Row, InputSplit> {
 
 	@Override
 	public void open(InputSplit split) throws IOException {
+		System.out.println("\n\n\n\n\n\nEntered Open\n\n\n\n");
 		try {
 			dataFrame = carbonContext.sql(queryTemplate);
+			System.out.println("\n\n\n\n fetched data from carbon");
+			dataFrame.show();
 			data = dataFrame.collectAsList().iterator();
 			hasNext = data.hasNext();
 		} catch (Exception ex) {
@@ -97,23 +101,15 @@ public class CarbonDataInputFormat<T> extends RichInputFormat<Row, InputSplit> {
 
 	@Override
 	public void openInputFormat() {
-		try {
-			SparkConf conf = new SparkConf().setMaster(sparkMaster).setAppName(appName);
-			JavaSparkContext javaSparkContext = new JavaSparkContext(conf);
-			System.out.println("\n\n\n" + storeLocation + "\n\n\n" + javaSparkContext.sc().sparkUser());
-			carbonContext = new CarbonContext(javaSparkContext.sc(), storeLocation);
-			System.out.println("\n\n\n\n\n\n" + carbonContext.storePath() + "\n\n\n\n\n\n");
-		} catch (Exception ex) {
-			ex.printStackTrace();
-			throw new IllegalArgumentException();
-		}
+		System.out.println("\n\n\n\nEntered OpenInputFormat\n\n\n\n");
 	}
 
 	@Override
 	public void closeInputFormat() {
+		System.out.println("\n\n\n\nEntered CloseInputFormat\n\n\n\n");
 		try {
-//			carbonContext.sparkContext().cancelAllJobs();
-//			carbonContext.sparkContext().stop();
+			carbonContext.sparkContext().cancelAllJobs();
+			carbonContext.sparkContext().stop();
 		} catch (Exception ex) {
 			LOG.info("Inputformat couldn't be closed - " + ex.getMessage());
 		} finally {
@@ -132,25 +128,30 @@ public class CarbonDataInputFormat<T> extends RichInputFormat<Row, InputSplit> {
 			this.format = new CarbonDataInputFormat();
 		}
 
-		public CarbonDataInputFormatBuilder setMasterUrl(String sparkMaster) {
-			format.sparkMaster = sparkMaster;
-			return this;
-		}
-
-		public CarbonDataInputFormatBuilder setStoreLocation(String storeLocation) {
-			format.storeLocation = storeLocation;
-			return this;
-		}
-
 		public CarbonDataInputFormatBuilder setQuery(String query) {
 			format.queryTemplate = query;
 			return this;
 		}
 
-		public CarbonDataInputFormatBuilder setAppName(String appName) {
-			format.appName = appName;
+		public CarbonDataInputFormatBuilder setCarbonContext(CarbonContext carbonContext) {
+			format.carbonContext = carbonContext;
 			return this;
 		}
+//			format.appName = appName;
+//			format.storeLocation = storeLocation;
+
+//			try {
+//				SparkConf conf = new SparkConf().setMaster(sparkMaster).setAppName(appName);
+//				JavaSparkContext javaSparkContext = new JavaSparkContext(conf);
+//				System.out.println("\n\n\n" + storeLocation + "\n\n\n" + javaSparkContext.sc().sparkUser());
+//				format.carbonContext = new CarbonContext(javaSparkContext.sc(), storeLocation);
+//				System.out.println("\n\n\n\n\n\n" + format.carbonContext.storePath() + "\n\n\n\n\n\n");
+//				return this;
+//			} catch (Exception ex) {
+//				ex.printStackTrace();
+//				throw new IllegalArgumentException();
+//			}
+//	}
 
 		public CarbonDataInputFormat finish() {
 			if (format.sparkMaster == null) {
